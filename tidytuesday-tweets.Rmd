@@ -1,6 +1,8 @@
 ---
 title: "#tidytuesday and #rstats tweets"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 The content is sourced from https://github.com/dgrtwo/data-screencasts/blob/master/tidytuesday-tweets.Rmd
@@ -9,22 +11,61 @@ The content is sourced from https://github.com/dgrtwo/data-screencasts/blob/mast
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-
-
-
 ```{r}
 library(tidyverse)
 
 theme_set(theme_light())
 
-tidytuesday_tweets <- read_rds(url("https://github.com/rfordatascience/tidytuesday/blob/master/data/2019/2019-01-01/tidytuesday_tweets.rds?raw=true")) %>%
-  mutate(week = as.Date(floor_date(created_at, "week", week_start = 1)))
+tidytuesday_tweets <- read_rds(url("https://github.com/rfordatascience/tidytuesday/blob/master/data/2019/2019-01-01/tidytuesday_tweets.rds?raw=true"))
+
+tidytuesday_tweets %>%
+  count(date = as.Date(created_at)) %>%
+  ggplot(aes(date, n)) +
+  expand_limits(y=0) +
+  geom_line()
+
 ```
 
 ```{r}
 library(lubridate)
+tidytuesday_tweets %>%
+  count(date = floor_date(created_at, "month")) %>%
+  ggplot(aes(date, n)) +
+  expand_limits(y=0) +
+  geom_line()
 
+```
+
+```{r}
+tidytuesday_tweets %>%
+  count(screen_name, sort = T) %>%
+  head(12) %>%
+  mutate(screen_name = reorder(screen_name, n)) %>%
+  ggplot(aes(screen_name, n)) +
+  geom_col() +
+  coord_flip()
+
+tidytuesday_tweets %>%
+  arrange(desc(retweet_count)) %>%
+  select(screen_name, text, retweet_count)
+
+tidytuesday_tweets %>%
+  group_by(screen_name) %>%
+  summarize(tweets = n(), 
+            retweets = sum(retweet_count)) %>%
+  arrange(desc(tweets)) %>%
+  arrange(desc(retweets))
+
+```
+
+```{r}
+tidytuesday_tweets <- tidytuesday_tweets %>%
+  mutate(week = as.Date(floor_date(created_at, "week", week_start = 1)))
+```
+
+```{r}
 week_summary <- tidytuesday_tweets %>%
+  mutate(week = floor_date(created_at, "week", week_start = 1)) %>%
   group_by(week) %>%
   summarize(tweets = n(),
             avg_retweets = exp(mean(log(retweet_count + 1))) - 1)
@@ -69,7 +110,7 @@ tidytuesday_tweets %>%
 
 ```{r}
 tidytuesday_tweets %>%
-  select(screen_name, text, retweet_count, favorite_count) %>%
+  select(screen_name, text, retweet_count, favorite_count, status_id) %>%
   mutate(ratio = (favorite_count + 1) / (retweet_count + 1)) %>%
   arrange(desc(ratio))
 ```
@@ -78,12 +119,16 @@ tidytuesday_tweets %>%
 library(tidytext)
 
 tweet_words <- tidytuesday_tweets %>%
+  mutate(week = floor_date(created_at, "week", week_start = 1)) %>%
   select(screen_name, text, retweet_count, favorite_count, created_at, status_id,
          week) %>%
   unnest_tokens(word, text, token = "tweets") %>%
   anti_join(stop_words, by = "word") %>%
   filter(!word %in% c("#tidytuesday", "de", "|"),
          str_detect(word, "[a-z]"))
+
+tweet_words %>% 
+  count(word, sort = T)
 
 tweet_words %>%
   count(word, sort = TRUE) %>%
@@ -96,11 +141,33 @@ tweet_words %>%
        y = "Frequency of words")
 ```
 
+
 ```{r}
 tidytuesday_tweets %>%
-  ggplot(aes(favorite_count + 1)) +
+  ggplot(aes(retweet_count)) +
+  geom_histogram()
+
+tidytuesday_tweets %>%
+  ggplot(aes(retweet_count + 1)) +
   geom_histogram() +
   scale_x_log10()
+
+tweet_words %>%
+  group_by(word) %>%
+  summarize(n = n(),
+            avg_retweets = mean(retweet_count),
+            avg_favorites = mean(favorite_count)) %>%
+  filter(n >= 30) %>%
+  arrange(desc(avg_retweets))
+
+tweet_words %>%
+  group_by(word) %>%
+  summarize(n = n(),
+            avg_retweets = exp(mean(log(retweet_count + 1))) - 1,
+            avg_favorites = exp(mean(log(favorite_count + 1))) - 1) %>%
+  filter(n >= 30) %>%
+  arrange(desc(avg_retweets))
+
 
 word_summary <- tweet_words %>%
   filter(!screen_name %in% c("thomas_mock", "R4DScommunity")) %>%
@@ -114,18 +181,6 @@ word_summary <- tweet_words %>%
 tweet_words %>%
   filter(word == "https://t.co/selb4fcv3u") %>%
   View()
-```
-
-```{r}
-tidytuesday_tweets %>%
-  mutate(week = floor_date(created_at, "week", week_start = 1))
-
-
-  ggplot(aes(date, n)) +
-  geom_line() +
-  expand_limits(y = 0) +
-  labs(x = "Time",
-       y = "# of #tidytuesday tweets")
 ```
 
 ### What topic is each week about?
@@ -161,7 +216,18 @@ week_titles <- read_html("https://github.com/rfordatascience/tidytuesday/tree/ma
 library(ggrepel)
 
 week_summary %>%
-  inner_join(top_word, by = c("week")) %>%
+  inner_join(top_word, by = "week") %>%
+  ggplot(aes(week, tweets)) +
+  geom_line(color = "lightblue", size = 2) +
+  geom_text_repel(aes(label = word)) +
+  expand_limits(y = 0) +
+  labs(x = "Time",
+       y = "# of #tidytuesday tweets each week",
+       title = "# of tweets about each week's #tidytuesday",
+       subtitle = "Shown is the word most specific to each week (based on TF-IDF)")
+
+week_summary %>%
+  inner_join(top_word, by = "week") %>%
   inner_join(week_titles, by = "week") %>%
   ggplot(aes(week, tweets)) +
   geom_line(color = "lightblue", size = 2) +
@@ -253,6 +319,27 @@ rstats_word_summary %>%
 ```
 
 ```{r}
+rstats_tweets %>% 
+  filter(created_at >= "2018-01-01") %>%
+  group_by(screen_name) %>%
+  summarize(tweets =n()) %>%
+  arrange(desc(tweets))
+```
+
+
+```{r}
+rstats_tweets %>%
+  mutate(hashtags = str_count(text, "#[a-zA-Z]"), sort = TRUE) %>%
+  ggplot(aes(hashtags)) + geom_histogram()
+```  
+
+
+```{r}
+rstats_tweets %>%
+  mutate(hashtags = str_count(text, "#[a-zA-Z]"), sort = TRUE) %>%
+  filter(hashtags < 6) %>%
+  group_by(word)
+
 rstats_tweets %>%
   mutate(hashtags = str_count(text, "#[a-zA-Z]"), sort = TRUE) %>%
   filter(hashtags < 6) %>%
