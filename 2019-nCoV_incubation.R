@@ -1,12 +1,18 @@
-library(fitdistrplus)
+# 2019-nCOV_incubation.R
+# The study approach is baesd on the paper 
+# Backer et al. 2020. The incubation period of 2019-nCoV infections among travellers from Wuhan, China
+# https://www.medrxiv.org/content/10.1101/2020.01.27.20018986v1
+
 library(tidyverse)
 library(rstan)
 library(bayestestR)
 library(loo)
 
 rstan_options(auto_write = TRUE)
-options(mc.cores = 1)
+options(mc.cores = 3)
 
+# Download data from 
+# https://docs.google.com/spreadsheets/d/1jS24DjSPVWa4iuxuD4OAXrE3QeI8c9BC1hSlqr-NMiU/edit#gid=1187587451
 data <- read_tsv(file = "Line-list.tsv", skip = 1) %>%  
   dplyr::select(`reporting date`, location, gender, age, symptom_onset, 
          exposure_start, exposure_end, `visiting Wuhan`, `from Wuhan`) %>%
@@ -20,32 +26,10 @@ tEndExposure <- as.integer((data$exposure_end %>% as.Date(format = "%m/%d/%Y")) 
 
 # exposure should ends before symptom onset
 tEndExposure[tSymptomOnset < tEndExposure] <- tSymptomOnset[tSymptomOnset < tEndExposure]
+# Constraint the minimal of tEndExposure and tSymptomOnset to 1
+tSymptomOnset[which(tSymptomOnset - tEndExposure == 0)] <- tSymptomOnset[which(tSymptomOnset - tEndExposure == 0)]+1
 # cases without maximum incubation period get start of exposure 21 days prior to first symptom onset
 tStartExposure[is.na(tStartExposure)] <- min(tSymptomOnset) - 21
-tSymptomOnset[which(tSymptomOnset - tEndExposure == 0)] <- tSymptomOnset[which(tSymptomOnset - tEndExposure == 0)]+1
-
-d <- tSymptomOnset - tEndExposure
-
-hist(d)
-descdist(d, boot = 1000)
-fw <- fitdist(d, "weibull")
-fg <- fitdist(d, "gamma")
-fln <- fitdist(d, "lnorm")
-summary(fw)
-summary(fg)
-summary(fln)
-
-denscomp(list(fw,fg,fln))
-cdfcomp(list(fw,fg,fln))
-
-quantile(fw, c(0.025, 0.5, 0.975))
-quantile(fg, c(0.025, 0.5, 0.975))
-quantile(fln, c(0.025, 0.5, 0.975))
-
-alpha <- fw$estimate[1]
-sigma <- fw$estimate[2]
-
-sigma*gamma(1+1/alpha)
 
 # input.data for stan analysis
 input.data <- list(
@@ -55,7 +39,6 @@ input.data <- list(
   tSymptomOnset = tSymptomOnset)
 
 # compile model
-
 model <- stan(data = input.data, 
               chains = 0, 
               iter = 0,
@@ -93,6 +76,7 @@ generated quantities {
 "
 )
 
+# Run simulation
 stanfit <- stan(fit = model, data = input.data, 
                 init = "random",
                 iter = 10000, chains = 3)
@@ -105,18 +89,32 @@ print(stanfit)
 LL = extract_log_lik(stanfit, parameter_name = 'log_lik')
 loo(LL)
 
-# results
-alpha <- rstan::extract(stanfit)$alphaInc
-sigma <- rstan::extract(stanfit)$sigmaInc
+# Extract outputs
+alpha <- rstan::extract(stanfit)$alphaInc %>% tail(500)
+sigma <- rstan::extract(stanfit)$sigmaInc %>% tail(500)
 
-# posterior median and 95%CI of mean
-hdi(sigma*gamma(1+1/alpha), ci=0.95)
+#  Estimate 95% high density interval
+hdi95 <- qweibull(0.95, shape=alpha, scale=sigma) %>% hdi(ci=0.9)
 
-quantile(sigma*gamma(1+1/alpha), probs = c(0.025,0.5,0.975))
-
-# posterior median and 95%CI of sd
-quantile(sqrt(sigma^2*(gamma(1+2/alpha)-(gamma(1+1/alpha))^2)), probs = c(0.025,0.5,0.975))
-
-# posterior median and 95%CI of percentiles
-percentiles <- sapply(c(0.025, 0.05, 0.5, 0.95, 0.975, 0.99), function(p) quantile(qweibull(p = p, shape = alpha, scale = sigma), probs = c(0.025, 0.5, 0.975)))
-colnames(percentiles) <- c(0.025, 0.05, 0.5, 0.95, 0.975, 0.99)
+# Plot result
+png(file = "fig1.png", width=2000, height=1500, res=300)
+layout(matrix(c(1,2,2)), heights=c(1,2))
+par(mar=c(0,4,2,2))
+hist(qweibull(0.95, shape=alpha, scale=sigma), xlim=c(0,20), 
+     main = "Estimated distribution of incubation days at 95th percentile",
+     axes = F, col = "lightblue", ylab="")
+y <- seq(0, 1, 0.01)
+x <- qweibull(y, shape=alpha[1], scale=sigma[1])
+par(mar=c(4,4,0,2))
+plot(x, y, type="l", col="grey80", xlim=c(0,20), las=1,
+     xlab="Incubation period (d)", ylab="CDF")
+for(i in 2:500){
+  x <- qweibull(y, shape=alpha[i], scale=sigma[i])
+  lines(x, y, col="grey60")
+}
+abline(h=0.95, lty=2)
+abline(v=14, lty=3, lwd=2, col="red")
+lines(c(hdi95$CI_low, hdi95$CI_high), c(0.95,0.95), col = "lightblue", lwd=2)
+text(14.1, 0, "Recommend quarantine days = 14", adj=0, col="red")
+text(hdi95$CI_high, 0.9, "90% High density interval at 95th percentile", cex=1, adj=1, col="blue")
+dev.off()
